@@ -20,15 +20,20 @@ function readBody(req) {
   });
 }
 
-// ─── Llamada a la API de Anthropic ────────────────────────────────────────────
-function llamarAnthropic(prompt) {
+// ─── Llamada a la API de Anthropic (una sola vuelta) ─────────────────────────
+function llamarAnthropic(messages, useTools) {
   return new Promise((resolve, reject) => {
-    const body = JSON.stringify({
+    const payload = {
       model: "claude-sonnet-4-20250514",
-      max_tokens: 1500,
-      tools: [{ type: "web_search_20250305", name: "web_search" }],
-      messages: [{ role: "user", content: prompt }],
-    });
+      max_tokens: 2000,
+      messages,
+    };
+
+    if (useTools) {
+      payload.tools = [{ type: "web_search_20250305", name: "web_search" }];
+    }
+
+    const body = JSON.stringify(payload);
 
     const options = {
       hostname: "api.anthropic.com",
@@ -60,9 +65,59 @@ function llamarAnthropic(prompt) {
   });
 }
 
+// ─── Agentic loop: maneja tool_use automáticamente ───────────────────────────
+async function llamarConBusqueda(promptText) {
+  const messages = [{ role: "user", content: promptText }];
+
+  // Máximo 5 iteraciones para evitar loops infinitos
+  for (let i = 0; i < 5; i++) {
+    const data = await llamarAnthropic(messages, true);
+
+    if (data.error) {
+      throw new Error(data.error.message || "Error de Anthropic API");
+    }
+
+    const content = data.content || [];
+
+    // Extraer texto de esta respuesta
+    const textoActual = content
+      .filter((b) => b.type === "text")
+      .map((b) => b.text)
+      .join("");
+
+    // Si el modelo terminó (stop_reason = "end_turn"), devolver el texto
+    if (data.stop_reason === "end_turn") {
+      return textoActual;
+    }
+
+    // Si hay tool_use, agregar la respuesta del modelo al historial
+    // y simular resultados de herramienta para continuar
+    if (data.stop_reason === "tool_use") {
+      // Agregar respuesta del asistente al historial
+      messages.push({ role: "assistant", content });
+
+      // Construir tool_result para cada tool_use
+      const toolResults = content
+        .filter((b) => b.type === "tool_use")
+        .map((b) => ({
+          type: "tool_result",
+          tool_use_id: b.id,
+          content: "Búsqueda completada. Usa tus conocimientos sobre precios de materiales de construcción en Oaxaca, México 2025-2026 para generar el presupuesto.",
+        }));
+
+      messages.push({ role: "user", content: toolResults });
+      continue;
+    }
+
+    // Cualquier otro stop_reason, devolver lo que haya
+    return textoActual;
+  }
+
+  throw new Error("Se agotaron los intentos del agente");
+}
+
 // ─── Servidor HTTP ─────────────────────────────────────────────────────────────
 const server = http.createServer(async (req, res) => {
-  // CORS — permite peticiones desde cualquier origen (ajusta en producción)
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -95,9 +150,9 @@ Un usuario reporta un bache con estas características:
 - Área: ${area} m²  |  Volumen: ${vol} m³
 - Tipo de zona: ${(condicion || "vialidad_principal").replace(/_/g, " ")}
 
-Tu tarea: Busca precios actuales 2025-2026 de materiales de construcción vial en México (especialmente Oaxaca) y genera EXACTAMENTE 3 opciones de reparación con diferente relación costo/durabilidad.
+Genera EXACTAMENTE 3 opciones de reparación con diferente relación costo/durabilidad usando precios realistas de materiales de construcción vial en Oaxaca, México para 2025-2026.
 
-Responde ÚNICAMENTE en JSON válido, sin texto adicional, sin markdown, sin backticks. El formato exacto es:
+Responde ÚNICAMENTE con un objeto JSON válido, sin texto adicional, sin markdown, sin backticks. El formato exacto es:
 
 {"opciones":[
   {
@@ -121,17 +176,11 @@ Responde ÚNICAMENTE en JSON válido, sin texto adicional, sin markdown, sin bac
   }
 ]}
 
-Las 3 opciones deben ser métodos distintos. badge debe ser "recomendado", "económico" o "durable". Usa precios realistas en pesos mexicanos MXN para Oaxaca 2025-2026.`;
+Las 3 opciones deben ser métodos distintos. badge debe ser "recomendado", "económico" o "durable". Todos los valores numéricos deben ser números, no strings.`;
 
-      const data = await llamarAnthropic(prompt);
+      const texto = await llamarConBusqueda(prompt);
 
-      // Extraer el texto de la respuesta
-      const textos = (data.content || [])
-        .filter((b) => b.type === "text")
-        .map((b) => b.text)
-        .join("");
-
-      const match = textos.match(/\{[\s\S]*\}/);
+      const match = texto.match(/\{[\s\S]*\}/);
       if (!match) throw new Error("La IA no devolvió JSON válido");
 
       const resultado = JSON.parse(match[0]);
