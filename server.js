@@ -20,18 +20,57 @@ function readBody(req) {
   });
 }
 
+// ─── Validar y parsear dimensiones ────────────────────────────────────────────
+function validarDimensiones({ largo, ancho, prof }) {
+  const l = parseFloat(largo);
+  const a = parseFloat(ancho);
+  const p = parseFloat(prof);
+
+  if (isNaN(l) || l <= 0 || l > 100)
+    throw new Error("Largo inválido (debe ser entre 0.1 y 100 metros).");
+  if (isNaN(a) || a <= 0 || a > 100)
+    throw new Error("Ancho inválido (debe ser entre 0.1 y 100 metros).");
+  if (isNaN(p) || p <= 0 || p > 100)
+    throw new Error("Profundidad inválida (debe ser entre 1 y 100 cm).");
+
+  return { l, a, p };
+}
+
+// ─── Extraer el primer objeto JSON válido de un string ────────────────────────
+function extraerJSON(texto) {
+  // Busca el bloque {"opciones":[...]} de forma robusta
+  const inicio = texto.indexOf('{"opciones"');
+  if (inicio === -1) throw new Error("La IA no devolvió el JSON esperado.");
+
+  // Busca el cierre balanceando llaves
+  let depth = 0;
+  let fin = -1;
+  for (let i = inicio; i < texto.length; i++) {
+    if (texto[i] === "{") depth++;
+    else if (texto[i] === "}") {
+      depth--;
+      if (depth === 0) { fin = i; break; }
+    }
+  }
+
+  if (fin === -1) throw new Error("JSON incompleto en la respuesta de la IA.");
+
+  try {
+    return JSON.parse(texto.slice(inicio, fin + 1));
+  } catch (e) {
+    throw new Error("No se pudo parsear el JSON: " + e.message);
+  }
+}
+
 // ─── Llamada a la API de Anthropic ────────────────────────────────────────────
-function llamarAnthropic(messages, useTools) {
+function llamarAnthropic(system, messages) {
   return new Promise((resolve, reject) => {
     const payload = {
-      model: "claude-sonnet-4-5",
-      max_tokens: 4000,
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 2000,
+      system,
       messages,
     };
-
-    if (useTools) {
-      payload.tools = [{ type: "web_search_20250305", name: "web_search" }];
-    }
 
     const body = JSON.stringify(payload);
 
@@ -52,9 +91,11 @@ function llamarAnthropic(messages, useTools) {
       res.on("data", (chunk) => (data += chunk));
       res.on("end", () => {
         try {
-          resolve(JSON.parse(data));
+          const parsed = JSON.parse(data);
+          if (parsed.error) reject(new Error(parsed.error.message || "Error de Anthropic API"));
+          else resolve(parsed);
         } catch (e) {
-          reject(new Error("Respuesta inválida de Anthropic"));
+          reject(new Error("Respuesta inválida de Anthropic: " + e.message));
         }
       });
     });
@@ -65,50 +106,64 @@ function llamarAnthropic(messages, useTools) {
   });
 }
 
-// ─── Agentic loop: maneja tool_use ───────────────────────────────────────────
-async function llamarConBusqueda(promptText) {
-  const messages = [{ role: "user", content: promptText }];
-  let textoFinal = "";
+// ─── Generar presupuesto ──────────────────────────────────────────────────────
+async function generarPresupuesto({ l, a, p, zona, calle, condicion }) {
+  const area = (l * a).toFixed(2);
+  const vol  = (l * a * p / 100).toFixed(3);
 
-  for (let i = 0; i < 5; i++) {
-    const data = await llamarAnthropic(messages, true);
+  const system = `Eres un ingeniero civil con 20 años de experiencia en infraestructura vial en Oaxaca de Juárez, México.
+Tu especialidad es la reparación de baches con conocimiento actualizado (2025-2026) de precios de materiales y mano de obra locales.
+Respondes ÚNICAMENTE con objetos JSON válidos, sin texto adicional, sin markdown, sin bloques de código, sin backticks.
+Todos los valores numéricos en el JSON son números, nunca strings.`;
 
-    if (data.error) {
-      throw new Error(data.error.message || "Error de Anthropic API");
-    }
+  const user = `Un inspector reporta un bache con estas características:
+- Ubicación: ${calle || "No especificada"}, ${zona || "Oaxaca de Juárez"}
+- Dimensiones: ${l}m × ${a}m × ${p}cm de profundidad
+- Área: ${area} m²  |  Volumen: ${vol} m³
+- Tipo de zona: ${(condicion || "vialidad_principal").replace(/_/g, " ")}
 
-    const content = data.content || [];
+Genera EXACTAMENTE 3 opciones de reparación con diferente relación costo/durabilidad.
+Usa precios realistas de materiales de construcción vial en Oaxaca, México para 2025-2026.
 
-    const textoActual = content
-      .filter((b) => b.type === "text")
-      .map((b) => b.text)
-      .join("");
+Responde SOLO con este JSON (sin nada antes ni después):
 
-    if (data.stop_reason === "end_turn") {
-      textoFinal = textoActual;
-      break;
-    }
-
-    if (data.stop_reason === "tool_use") {
-      messages.push({ role: "assistant", content });
-
-      const toolResults = content
-        .filter((b) => b.type === "tool_use")
-        .map((b) => ({
-          type: "tool_result",
-          tool_use_id: b.id,
-          content: "Búsqueda completada. Usa tus conocimientos sobre precios de materiales de construcción en Oaxaca, México 2025-2026 para generar el presupuesto.",
-        }));
-
-      messages.push({ role: "user", content: toolResults });
-      continue;
-    }
-
-    textoFinal = textoActual;
-    break;
+{"opciones":[
+  {
+    "id":1,
+    "nombre":"Nombre del método",
+    "badge":"recomendado",
+    "descripcion":"Descripción breve en 1-2 oraciones.",
+    "duracion_estimada":"Ej. 2-3 años",
+    "tiempo_ejecucion":"Ej. 2-4 horas",
+    "materiales":[
+      {"nombre":"Material","cantidad":"X kg","precio_unitario":0,"precio_total":0}
+    ],
+    "mano_obra":0,
+    "maquinaria":0,
+    "señalamiento":0,
+    "subtotal_materiales":0,
+    "imprevistos_15":0,
+    "total":0,
+    "ventajas":["ventaja 1","ventaja 2"],
+    "desventajas":["desventaja 1"]
   }
+]}
 
-  return textoFinal;
+Reglas:
+- Las 3 opciones deben ser métodos distintos (ej: bacheo en frío, mezcla asfáltica en caliente, concreto hidráulico).
+- badge debe ser exactamente uno de: "recomendado", "economico" o "durable" (sin acento en económico).
+- Todos los valores numéricos son números enteros o decimales, nunca strings.
+- imprevistos_15 = 15% del (subtotal_materiales + mano_obra + maquinaria + señalamiento).
+- total = subtotal_materiales + mano_obra + maquinaria + señalamiento + imprevistos_15.`;
+
+  const data = await llamarAnthropic(system, [{ role: "user", content: user }]);
+
+  const texto = (data.content || [])
+    .filter((b) => b.type === "text")
+    .map((b) => b.text)
+    .join("");
+
+  return extraerJSON(texto);
 }
 
 // ─── Servidor HTTP ─────────────────────────────────────────────────────────────
@@ -123,6 +178,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── Ruta: POST /presupuesto ────────────────────────────────────────────────
   if (req.method === "POST" && req.url === "/presupuesto") {
     if (!ANTHROPIC_API_KEY) {
       res.writeHead(500, { "Content-Type": "application/json" });
@@ -131,95 +187,32 @@ const server = http.createServer(async (req, res) => {
     }
 
     try {
-      const { largo, ancho, prof, zona, calle, condicion } = await readBody(req);
+      const body = await readBody(req);
+      const { zona, calle, condicion } = body;
 
-      const area = (parseFloat(largo) * parseFloat(ancho)).toFixed(2);
-      const vol = (parseFloat(largo) * parseFloat(ancho) * parseFloat(prof) / 100).toFixed(3);
+      // Validar dimensiones antes de llamar a la IA
+      const { l, a, p } = validarDimensiones(body);
 
-      const prompt = `Eres un ingeniero civil especialista en infraestructura vial en México con experiencia en Oaxaca de Juárez.
-
-Un usuario reporta un bache con estas características:
-- Ubicación: ${calle || "No especificada"}, ${zona || "Oaxaca de Juárez"}
-- Dimensiones: ${largo}m × ${ancho}m × ${prof}cm de profundidad
-- Área: ${area} m²  |  Volumen: ${vol} m³
-- Tipo de zona: ${(condicion || "vialidad_principal").replace(/_/g, " ")}
-
-Genera EXACTAMENTE 3 opciones de reparación con diferente relación costo/durabilidad usando precios realistas de materiales de construcción vial en Oaxaca, México para 2025-2026.
-
-También incluye un arreglo "fuentes" con los sitios web reales que existen y que son relevantes para estos precios (máximo 4 fuentes).
-
-Responde ÚNICAMENTE con un objeto JSON válido, sin texto adicional, sin markdown, sin backticks:
-
-{
-  "fuentes": [
-    {
-      "titulo": "Nombre del sitio web",
-      "url": "https://url-real.com",
-      "descripcion": "Por qué es relevante para estos precios"
-    }
-  ],
-  "opciones": [
-    {
-      "id": 1,
-      "nombre": "Nombre del método",
-      "badge": "recomendado",
-      "descripcion": "Descripción breve en 1-2 oraciones.",
-      "duracion_estimada": "2-3 años",
-      "tiempo_ejecucion": "2-4 horas",
-      "materiales": [
-        {"nombre": "Material", "cantidad": "X kg", "precio_unitario": 000, "precio_total": 000}
-      ],
-      "mano_obra": 0000,
-      "maquinaria": 000,
-      "señalamiento": 000,
-      "subtotal_materiales": 0000,
-      "imprevistos_15": 000,
-      "total": 0000,
-      "ventajas": ["ventaja 1", "ventaja 2"],
-      "desventajas": ["desventaja 1"]
-    }
-  ]
-}
-
-Las 3 opciones deben ser métodos distintos. badge: "recomendado", "económico" o "durable". Todos los valores numéricos deben ser números, no strings.`;
-
-      const texto = await llamarConBusqueda(prompt);
-
-      const match = texto.match(/\{[\s\S]*\}/);
-      if (!match) throw new Error("La IA no devolvió JSON válido. Respuesta: " + texto.substring(0, 200));
-
-      const resultado = JSON.parse(match[0]);
-
-      // Fallback si la IA no incluyó fuentes
-      if (!resultado.fuentes || resultado.fuentes.length === 0) {
-        resultado.fuentes = [
-          {
-            titulo: "CMIC — Costos de construcción Oaxaca",
-            url: "https://www.cmic.org.mx",
-            descripcion: "Precios de referencia de materiales y mano de obra para Oaxaca 2025-2026",
-          },
-          {
-            titulo: "SINFRA Oaxaca — Precios unitarios",
-            url: "https://sinfra.oaxaca.gob.mx",
-            descripcion: "Secretaría de Infraestructura de Oaxaca: catálogo oficial de precios de pavimentación",
-          },
-          {
-            titulo: "IMSS — Salarios sector construcción",
-            url: "https://www.imss.gob.mx",
-            descripcion: "Tarifas oficiales de mano de obra en el sector construcción México 2026",
-          },
-        ];
-      }
+      const resultado = await generarPresupuesto({ l, a, p, zona, calle, condicion });
 
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(resultado));
     } catch (err) {
-      res.writeHead(500, { "Content-Type": "application/json" });
+      const status = err.message.includes("inválido") ? 400 : 500;
+      res.writeHead(status, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: err.message }));
     }
     return;
   }
 
+  // ── Health check ────────────────────────────────────────────────────────────
+  if (req.method === "GET" && req.url === "/health") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ status: "ok" }));
+    return;
+  }
+
+  // ── Ruta no encontrada ─────────────────────────────────────────────────────
   res.writeHead(404, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ error: "Ruta no encontrada" }));
 });
