@@ -24,7 +24,7 @@ function readBody(req) {
 function llamarAnthropic(messages, useTools) {
   return new Promise((resolve, reject) => {
     const payload = {
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-4-5",
       max_tokens: 2000,
       messages,
     };
