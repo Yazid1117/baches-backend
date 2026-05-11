@@ -38,9 +38,26 @@ function validarDimensiones({ largo, ancho, prof }) {
 
 // ─── Extraer el primer objeto JSON válido de un string ────────────────────────
 function extraerJSON(texto) {
-  // Busca el bloque {"opciones":[...]} de forma robusta
-  const inicio = texto.indexOf('{"opciones"');
-  if (inicio === -1) throw new Error("La IA no devolvió el JSON esperado.");
+  // Limpiar bloques markdown si el modelo los usa
+  texto = texto.replace(/```(?:json)?/gi, "").trim();
+
+  // Buscar inicio del objeto: tolera {"opciones", { "opciones", espacios varios
+  let inicio = -1;
+  const patterns = ['{"opciones"', '{ "opciones"'];
+  for (const p of patterns) {
+    const idx = texto.indexOf(p);
+    if (idx !== -1) { inicio = idx; break; }
+  }
+  // Fallback: cualquier { que contenga "opciones" cerca
+  if (inicio === -1) {
+    const m = texto.match(/\{[\s\S]{0,20}"opciones"/);
+    if (m) inicio = texto.indexOf(m[0]);
+  }
+
+  if (inicio === -1) {
+    console.error("[extraerJSON] Respuesta sin JSON:\n", texto.slice(0, 600));
+    throw new Error("La IA no devolvió el JSON esperado.");
+  }
 
   // Busca el cierre balanceando llaves
   let depth = 0;
@@ -55,9 +72,11 @@ function extraerJSON(texto) {
 
   if (fin === -1) throw new Error("JSON incompleto en la respuesta de la IA.");
 
+  const jsonStr = texto.slice(inicio, fin + 1);
   try {
-    return JSON.parse(texto.slice(inicio, fin + 1));
+    return JSON.parse(jsonStr);
   } catch (e) {
+    console.error("[extraerJSON] Parse error:", e.message, "\nJSON:", jsonStr.slice(0, 300));
     throw new Error("No se pudo parsear el JSON: " + e.message);
   }
 }
@@ -125,7 +144,7 @@ Todos los valores numéricos en el JSON son números, nunca strings.`;
 Genera EXACTAMENTE 3 opciones de reparación con diferente relación costo/durabilidad.
 Usa precios realistas de materiales de construcción vial en Oaxaca, México para 2025-2026.
 
-Responde SOLO con este JSON (sin nada antes ni después):
+IMPORTANTE: Tu respuesta debe comenzar DIRECTAMENTE con el carácter { sin ningún texto previo, sin explicaciones, sin backticks, sin markdown. Solo el JSON puro:
 
 {"opciones":[
   {
