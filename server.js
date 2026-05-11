@@ -66,7 +66,7 @@ function extraerJSON(texto) {
 function llamarAnthropic(system, messages) {
   return new Promise((resolve, reject) => {
     const payload = {
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-4-5",
       max_tokens: 2000,
       system,
       messages,
