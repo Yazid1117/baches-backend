@@ -25,7 +25,7 @@ function llamarAnthropic(messages, useTools) {
   return new Promise((resolve, reject) => {
     const payload = {
       model: "claude-sonnet-4-5",
-      max_tokens: 2000,
+      max_tokens: 4000,
       messages,
     };
 
@@ -65,7 +65,7 @@ function llamarAnthropic(messages, useTools) {
   });
 }
 
-// ─── Agentic loop: maneja tool_use y acumula fuentes ─────────────────────────
+// ─── Agentic loop: maneja tool_use ───────────────────────────────────────────
 async function llamarConBusqueda(promptText) {
   const messages = [{ role: "user", content: promptText }];
   let textoFinal = "";
@@ -146,7 +146,7 @@ Un usuario reporta un bache con estas características:
 
 Genera EXACTAMENTE 3 opciones de reparación con diferente relación costo/durabilidad usando precios realistas de materiales de construcción vial en Oaxaca, México para 2025-2026.
 
-También incluye un arreglo "fuentes" con los sitios web reales que existen y que consultaste o que son relevantes para estos precios (máximo 4 fuentes).
+También incluye un arreglo "fuentes" con los sitios web reales que existen y que son relevantes para estos precios (máximo 4 fuentes).
 
 Responde ÚNICAMENTE con un objeto JSON válido, sin texto adicional, sin markdown, sin backticks:
 
