@@ -181,7 +181,7 @@ Las 3 opciones deben ser métodos distintos. badge debe ser "recomendado", "econ
       const texto = await llamarConBusqueda(prompt);
 
       const match = texto.match(/\{[\s\S]*\}/);
-      if (!match) throw new Error("La IA no devolvió JSON válido");
+      if (!match) throw new Error("Sin JSON. Respuesta: " + texto.substring(0, 300));
 
       const resultado = JSON.parse(match[0]);
 
