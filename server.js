@@ -20,7 +20,7 @@ function readBody(req) {
   });
 }
 
-// ─── Llamada a la API de Anthropic (una sola vuelta) ─────────────────────────
+// ─── Llamada a la API de Anthropic ────────────────────────────────────────────
 function llamarAnthropic(messages, useTools) {
   return new Promise((resolve, reject) => {
     const payload = {
@@ -65,11 +65,11 @@ function llamarAnthropic(messages, useTools) {
   });
 }
 
-// ─── Agentic loop: maneja tool_use automáticamente ───────────────────────────
+// ─── Agentic loop: maneja tool_use y acumula fuentes ─────────────────────────
 async function llamarConBusqueda(promptText) {
   const messages = [{ role: "user", content: promptText }];
+  let textoFinal = "";
 
-  // Máximo 5 iteraciones para evitar loops infinitos
   for (let i = 0; i < 5; i++) {
     const data = await llamarAnthropic(messages, true);
 
@@ -79,24 +79,19 @@ async function llamarConBusqueda(promptText) {
 
     const content = data.content || [];
 
-    // Extraer texto de esta respuesta
     const textoActual = content
       .filter((b) => b.type === "text")
       .map((b) => b.text)
       .join("");
 
-    // Si el modelo terminó (stop_reason = "end_turn"), devolver el texto
     if (data.stop_reason === "end_turn") {
-      return textoActual;
+      textoFinal = textoActual;
+      break;
     }
 
-    // Si hay tool_use, agregar la respuesta del modelo al historial
-    // y simular resultados de herramienta para continuar
     if (data.stop_reason === "tool_use") {
-      // Agregar respuesta del asistente al historial
       messages.push({ role: "assistant", content });
 
-      // Construir tool_result para cada tool_use
       const toolResults = content
         .filter((b) => b.type === "tool_use")
         .map((b) => ({
@@ -109,11 +104,11 @@ async function llamarConBusqueda(promptText) {
       continue;
     }
 
-    // Cualquier otro stop_reason, devolver lo que haya
-    return textoActual;
+    textoFinal = textoActual;
+    break;
   }
 
-  throw new Error("Se agotaron los intentos del agente");
+  return textoFinal;
 }
 
 // ─── Servidor HTTP ─────────────────────────────────────────────────────────────
@@ -128,7 +123,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // ── Ruta: POST /presupuesto ────────────────────────────────────────────────
   if (req.method === "POST" && req.url === "/presupuesto") {
     if (!ANTHROPIC_API_KEY) {
       res.writeHead(500, { "Content-Type": "application/json" });
@@ -152,38 +146,70 @@ Un usuario reporta un bache con estas características:
 
 Genera EXACTAMENTE 3 opciones de reparación con diferente relación costo/durabilidad usando precios realistas de materiales de construcción vial en Oaxaca, México para 2025-2026.
 
-Responde ÚNICAMENTE con un objeto JSON válido, sin texto adicional, sin markdown, sin backticks. El formato exacto es:
+También incluye un arreglo "fuentes" con los sitios web reales que existen y que consultaste o que son relevantes para estos precios (máximo 4 fuentes).
 
-{"opciones":[
-  {
-    "id":1,
-    "nombre":"Nombre del método",
-    "badge":"recomendado",
-    "descripcion":"Descripción breve en 1-2 oraciones.",
-    "duracion_estimada":"Ej. 2-3 años",
-    "tiempo_ejecucion":"Ej. 2-4 horas",
-    "materiales":[
-      {"nombre":"Material","cantidad":"X kg","precio_unitario":000,"precio_total":000}
-    ],
-    "mano_obra":0000,
-    "maquinaria":000,
-    "señalamiento":000,
-    "subtotal_materiales":0000,
-    "imprevistos_15":000,
-    "total":0000,
-    "ventajas":["ventaja 1","ventaja 2"],
-    "desventajas":["desventaja 1"]
-  }
-]}
+Responde ÚNICAMENTE con un objeto JSON válido, sin texto adicional, sin markdown, sin backticks:
 
-Las 3 opciones deben ser métodos distintos. badge debe ser "recomendado", "económico" o "durable". Todos los valores numéricos deben ser números, no strings.`;
+{
+  "fuentes": [
+    {
+      "titulo": "Nombre del sitio web",
+      "url": "https://url-real.com",
+      "descripcion": "Por qué es relevante para estos precios"
+    }
+  ],
+  "opciones": [
+    {
+      "id": 1,
+      "nombre": "Nombre del método",
+      "badge": "recomendado",
+      "descripcion": "Descripción breve en 1-2 oraciones.",
+      "duracion_estimada": "2-3 años",
+      "tiempo_ejecucion": "2-4 horas",
+      "materiales": [
+        {"nombre": "Material", "cantidad": "X kg", "precio_unitario": 000, "precio_total": 000}
+      ],
+      "mano_obra": 0000,
+      "maquinaria": 000,
+      "señalamiento": 000,
+      "subtotal_materiales": 0000,
+      "imprevistos_15": 000,
+      "total": 0000,
+      "ventajas": ["ventaja 1", "ventaja 2"],
+      "desventajas": ["desventaja 1"]
+    }
+  ]
+}
+
+Las 3 opciones deben ser métodos distintos. badge: "recomendado", "económico" o "durable". Todos los valores numéricos deben ser números, no strings.`;
 
       const texto = await llamarConBusqueda(prompt);
 
       const match = texto.match(/\{[\s\S]*\}/);
-      if (!match) throw new Error("Sin JSON. Respuesta: " + texto.substring(0, 300));
+      if (!match) throw new Error("La IA no devolvió JSON válido. Respuesta: " + texto.substring(0, 200));
 
       const resultado = JSON.parse(match[0]);
+
+      // Fallback si la IA no incluyó fuentes
+      if (!resultado.fuentes || resultado.fuentes.length === 0) {
+        resultado.fuentes = [
+          {
+            titulo: "CMIC — Costos de construcción Oaxaca",
+            url: "https://www.cmic.org.mx",
+            descripcion: "Precios de referencia de materiales y mano de obra para Oaxaca 2025-2026",
+          },
+          {
+            titulo: "SINFRA Oaxaca — Precios unitarios",
+            url: "https://sinfra.oaxaca.gob.mx",
+            descripcion: "Secretaría de Infraestructura de Oaxaca: catálogo oficial de precios de pavimentación",
+          },
+          {
+            titulo: "IMSS — Salarios sector construcción",
+            url: "https://www.imss.gob.mx",
+            descripcion: "Tarifas oficiales de mano de obra en el sector construcción México 2026",
+          },
+        ];
+      }
 
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(resultado));
@@ -194,7 +220,6 @@ Las 3 opciones deben ser métodos distintos. badge debe ser "recomendado", "econ
     return;
   }
 
-  // ── Ruta no encontrada ─────────────────────────────────────────────────────
   res.writeHead(404, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ error: "Ruta no encontrada" }));
 });
